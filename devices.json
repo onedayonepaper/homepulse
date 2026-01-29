@@ -1,0 +1,25 @@
+[
+  {
+    "id": "router",
+    "name": "공유기",
+    "type": "tcp",
+    "host": "192.168.0.1",
+    "port": 80,
+    "timeoutMs": 1200
+  },
+  {
+    "id": "nas",
+    "name": "NAS",
+    "type": "http",
+    "url": "http://192.168.0.10:5000",
+    "timeoutMs": 1500
+  },
+  {
+    "id": "camera1",
+    "name": "IP카메라",
+    "type": "tcp",
+    "host": "192.168.0.20",
+    "port": 554,
+    "timeoutMs": 1200
+  }
+]
