@@ -210,6 +210,7 @@ DB_PATH=./data/homepulse.sqlite npm start
 |--------|-----|------|
 | 대시보드 | http://localhost:8787 | 장비 상태 + 이벤트 로그 |
 | 그래프 | http://localhost:8787/graph | 응답시간 시계열 그래프 |
+| 아키텍처 | http://localhost:8787/architecture | 프로젝트 구조 + 데이터 흐름 |
 
 ---
 
