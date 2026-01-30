@@ -1,7 +1,8 @@
 import "dotenv/config";
 import express from "express";
-import { initDb, listDeviceStates, listEvents } from "./db.js";
+import { initDb, listDeviceStates, listEvents, getEventStats, getUptimeStats } from "./db.js";
 import { startMonitor } from "./monitor.js";
+import { sendTelegram } from "./notify.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 8787);
@@ -15,6 +16,71 @@ app.get("/api/status", (req, res) => {
 
 app.get("/api/events", (req, res) => {
   res.json({ events: listEvents(db, 50) });
+});
+
+// 일일 요약 API
+app.get("/api/summary", (req, res) => {
+  const now = new Date();
+
+  // 어제 00:00:00 ~ 23:59:59
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  yesterday.setHours(0, 0, 0, 0);
+  const startTs = Math.floor(yesterday.getTime() / 1000);
+
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const endTs = Math.floor(todayStart.getTime() / 1000);
+
+  const stats = getEventStats(db, startTs, endTs);
+  const uptime = getUptimeStats(db);
+
+  res.json({
+    date: yesterday.toISOString().split("T")[0],
+    current: uptime,
+    yesterday: {
+      downCount: stats.downCount,
+      upCount: stats.upCount,
+      deviceDownCounts: stats.deviceDownCounts
+    }
+  });
+});
+
+// 일일 요약 즉시 발송 (테스트용)
+app.post("/api/summary/send", async (req, res) => {
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  yesterday.setHours(0, 0, 0, 0);
+  const startTs = Math.floor(yesterday.getTime() / 1000);
+
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const endTs = Math.floor(todayStart.getTime() / 1000);
+
+  const stats = getEventStats(db, startTs, endTs);
+  const uptime = getUptimeStats(db);
+
+  const dateStr = yesterday.toLocaleDateString("ko-KR", {
+    year: "numeric", month: "long", day: "numeric"
+  });
+
+  let msg = `📊 일일 요약 리포트\n`;
+  msg += `📅 ${dateStr}\n\n`;
+  msg += `📡 현재 상태: ${uptime.upCount}/${uptime.total} UP (${uptime.uptimePercent}%)\n`;
+
+  if (stats.downCount === 0) {
+    msg += `\n✨ 어제 장애 0건! 완벽한 하루였습니다.`;
+  } else {
+    msg += `\n⚠️ 어제 장애: ${stats.downCount}건\n`;
+    const deviceList = Object.entries(stats.deviceDownCounts)
+      .map(([name, count]) => `  - ${name}: ${count}회`)
+      .join("\n");
+    if (deviceList) msg += deviceList;
+  }
+
+  await sendTelegram(msg, process.env);
+  res.json({ success: true, message: msg });
 });
 
 app.get("/", (req, res) => {

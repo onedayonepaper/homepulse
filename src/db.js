@@ -60,3 +60,44 @@ export function addEvent(db, ev) {
 export function listEvents(db, limit = 50) {
   return db.prepare(`SELECT * FROM events ORDER BY ts DESC LIMIT ?`).all(limit);
 }
+
+// 특정 기간의 이벤트 통계
+export function getEventStats(db, startTs, endTs) {
+  const events = db.prepare(`
+    SELECT * FROM events
+    WHERE ts >= ? AND ts < ?
+    ORDER BY ts ASC
+  `).all(startTs, endTs);
+
+  const downEvents = events.filter(e => e.type === "DOWN");
+  const upEvents = events.filter(e => e.type === "UP");
+
+  // 장비별 장애 횟수
+  const deviceDownCounts = {};
+  for (const e of downEvents) {
+    deviceDownCounts[e.device_name] = (deviceDownCounts[e.device_name] || 0) + 1;
+  }
+
+  return {
+    totalEvents: events.length,
+    downCount: downEvents.length,
+    upCount: upEvents.length,
+    deviceDownCounts,
+    events
+  };
+}
+
+// 가동률 계산 (단순화: 현재 UP인 장비 비율)
+export function getUptimeStats(db) {
+  const devices = listDeviceStates(db);
+  const total = devices.length;
+  const upCount = devices.filter(d => d.is_up === 1).length;
+  const uptimePercent = total > 0 ? ((upCount / total) * 100).toFixed(1) : 0;
+
+  return {
+    total,
+    upCount,
+    downCount: total - upCount,
+    uptimePercent
+  };
+}
