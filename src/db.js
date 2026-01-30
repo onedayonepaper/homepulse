@@ -23,6 +23,17 @@ export function initDb(dbPath = "/data/homepulse.sqlite") {
       message TEXT,
       ts INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS response_times (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      response_time INTEGER,
+      is_up INTEGER NOT NULL,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_response_times_device_ts
+    ON response_times(device_id, ts DESC);
   `);
 
   return db;
@@ -100,4 +111,66 @@ export function getUptimeStats(db) {
     downCount: total - upCount,
     uptimePercent
   };
+}
+
+// 응답시간 기록
+export function addResponseTime(db, row) {
+  db.prepare(`
+    INSERT INTO response_times (device_id, response_time, is_up, ts)
+    VALUES (@device_id, @response_time, @is_up, @ts)
+  `).run(row);
+}
+
+// 특정 장비의 응답시간 조회 (최근 N개)
+export function getResponseTimes(db, deviceId, limit = 60) {
+  return db.prepare(`
+    SELECT * FROM response_times
+    WHERE device_id = ?
+    ORDER BY ts DESC
+    LIMIT ?
+  `).all(deviceId, limit).reverse(); // 시간순 정렬
+}
+
+// 모든 장비의 최근 응답시간 조회
+export function getAllResponseTimes(db, limit = 60) {
+  const devices = listDeviceStates(db);
+  const result = {};
+
+  for (const d of devices) {
+    result[d.id] = {
+      name: d.name,
+      data: getResponseTimes(db, d.id, limit)
+    };
+  }
+
+  return result;
+}
+
+// 응답시간 통계 (평균, 최대, 최소)
+export function getResponseTimeStats(db, deviceId, hours = 24) {
+  const sinceTs = Math.floor(Date.now() / 1000) - (hours * 3600);
+
+  const stats = db.prepare(`
+    SELECT
+      AVG(response_time) as avg,
+      MAX(response_time) as max,
+      MIN(response_time) as min,
+      COUNT(*) as count
+    FROM response_times
+    WHERE device_id = ? AND ts >= ? AND response_time IS NOT NULL
+  `).get(deviceId, sinceTs);
+
+  return {
+    avg: stats.avg ? Math.round(stats.avg) : null,
+    max: stats.max,
+    min: stats.min,
+    count: stats.count
+  };
+}
+
+// 오래된 응답시간 데이터 정리 (기본 7일)
+export function cleanupResponseTimes(db, daysToKeep = 7) {
+  const cutoffTs = Math.floor(Date.now() / 1000) - (daysToKeep * 24 * 3600);
+  const result = db.prepare(`DELETE FROM response_times WHERE ts < ?`).run(cutoffTs);
+  return result.changes;
 }

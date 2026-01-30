@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express from "express";
-import { initDb, listDeviceStates, listEvents, getEventStats, getUptimeStats } from "./db.js";
+import { initDb, listDeviceStates, listEvents, getEventStats, getUptimeStats, getAllResponseTimes, getResponseTimeStats } from "./db.js";
 import { startMonitor } from "./monitor.js";
 import { sendTelegram } from "./notify.js";
 
@@ -83,6 +83,235 @@ app.post("/api/summary/send", async (req, res) => {
   res.json({ success: true, message: msg });
 });
 
+// 응답시간 API
+app.get("/api/response-times", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 60, 1440); // 최대 24시간 (1분 간격 기준)
+  const data = getAllResponseTimes(db, limit);
+  res.json(data);
+});
+
+// 응답시간 통계 API
+app.get("/api/response-times/stats", (req, res) => {
+  const hours = Math.min(Number(req.query.hours) || 24, 168); // 최대 7일
+  const devices = listDeviceStates(db);
+
+  const stats = {};
+  for (const d of devices) {
+    stats[d.id] = {
+      name: d.name,
+      ...getResponseTimeStats(db, d.id, hours)
+    };
+  }
+
+  res.json(stats);
+});
+
+// 그래프 페이지
+app.get("/graph", (req, res) => {
+  const devices = listDeviceStates(db);
+
+  res.send(`
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>HomePulse - 응답시간 그래프</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body{font-family:system-ui;margin:24px;background:#fafafa}
+  .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+  .header h2{margin:0}
+  .header a{color:#666;text-decoration:none}
+  .card{background:#fff;border:1px solid #eee;border-radius:14px;padding:20px;margin:14px 0}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px}
+  .stat-card{background:#f8f9fa;border-radius:10px;padding:16px;text-align:center}
+  .stat-value{font-size:28px;font-weight:700;color:#1a7f37}
+  .stat-label{color:#666;font-size:13px;margin-top:4px}
+  .chart-container{position:relative;height:300px}
+  .muted{color:#666;font-size:13px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px}
+  .legend-item{display:flex;align-items:center;gap:6px;font-size:13px}
+  .legend-color{width:12px;height:12px;border-radius:2px}
+</style>
+</head>
+<body>
+  <div class="header">
+    <h2>📈 응답시간 모니터링</h2>
+    <a href="/">← 대시보드로 돌아가기</a>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="stat-card">
+      <div class="stat-value" id="avg-all">-</div>
+      <div class="stat-label">전체 평균 (ms)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="max-all">-</div>
+      <div class="stat-label">최대 응답시간 (ms)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="min-all">-</div>
+      <div class="stat-label">최소 응답시간 (ms)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="checks-all">-</div>
+      <div class="stat-label">체크 횟수 (24h)</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>응답시간 추이 (최근 1시간)</h3>
+    <div class="chart-container">
+      <canvas id="responseChart"></canvas>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="card">
+    <h3>장비별 통계 (24시간)</h3>
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="border-bottom:2px solid #eee">
+          <th style="text-align:left;padding:10px">장비</th>
+          <th style="text-align:right;padding:10px">평균</th>
+          <th style="text-align:right;padding:10px">최대</th>
+          <th style="text-align:right;padding:10px">최소</th>
+          <th style="text-align:right;padding:10px">체크 수</th>
+        </tr>
+      </thead>
+      <tbody id="statsTable"></tbody>
+    </table>
+  </div>
+
+  <div class="muted" style="margin-top:20px">
+    30초마다 자동 갱신 | 데이터 보관: 7일
+  </div>
+
+<script>
+const colors = ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0', '#F44336', '#00BCD4'];
+let chart = null;
+
+async function loadData() {
+  const [timesRes, statsRes] = await Promise.all([
+    fetch('/api/response-times?limit=60'),
+    fetch('/api/response-times/stats?hours=24')
+  ]);
+
+  const times = await timesRes.json();
+  const stats = await statsRes.json();
+
+  updateChart(times);
+  updateStats(stats);
+}
+
+function updateChart(data) {
+  const ctx = document.getElementById('responseChart').getContext('2d');
+  const deviceIds = Object.keys(data);
+
+  const datasets = deviceIds.map((id, i) => {
+    const device = data[id];
+    return {
+      label: device.name,
+      data: device.data.map(d => ({
+        x: new Date(d.ts * 1000),
+        y: d.response_time
+      })),
+      borderColor: colors[i % colors.length],
+      backgroundColor: colors[i % colors.length] + '20',
+      borderWidth: 2,
+      fill: false,
+      tension: 0.3,
+      pointRadius: 0,
+      pointHoverRadius: 5
+    };
+  });
+
+  // 범례 업데이트
+  const legendEl = document.getElementById('legend');
+  legendEl.innerHTML = deviceIds.map((id, i) =>
+    '<div class="legend-item"><div class="legend-color" style="background:' + colors[i % colors.length] + '"></div>' + data[id].name + '</div>'
+  ).join('');
+
+  if (chart) {
+    chart.data.datasets = datasets;
+    chart.update('none');
+  } else {
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => ctx.dataset.label + ': ' + (ctx.parsed.y ?? '-') + 'ms'
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } },
+            grid: { display: false }
+          },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: 'ms' },
+            grid: { color: '#f0f0f0' }
+          }
+        }
+      }
+    });
+  }
+}
+
+function updateStats(stats) {
+  const deviceIds = Object.keys(stats);
+  let totalAvg = 0, totalMax = 0, totalMin = Infinity, totalCount = 0, validDevices = 0;
+
+  const rows = deviceIds.map(id => {
+    const s = stats[id];
+    if (s.avg !== null) {
+      totalAvg += s.avg;
+      totalMax = Math.max(totalMax, s.max || 0);
+      totalMin = Math.min(totalMin, s.min || Infinity);
+      totalCount += s.count;
+      validDevices++;
+    }
+    return '<tr style="border-bottom:1px solid #eee">' +
+      '<td style="padding:10px">' + s.name + '</td>' +
+      '<td style="text-align:right;padding:10px">' + (s.avg ?? '-') + ' ms</td>' +
+      '<td style="text-align:right;padding:10px">' + (s.max ?? '-') + ' ms</td>' +
+      '<td style="text-align:right;padding:10px">' + (s.min ?? '-') + ' ms</td>' +
+      '<td style="text-align:right;padding:10px">' + s.count + '</td>' +
+    '</tr>';
+  }).join('');
+
+  document.getElementById('statsTable').innerHTML = rows;
+  document.getElementById('avg-all').textContent = validDevices ? Math.round(totalAvg / validDevices) : '-';
+  document.getElementById('max-all').textContent = totalMax || '-';
+  document.getElementById('min-all').textContent = totalMin === Infinity ? '-' : totalMin;
+  document.getElementById('checks-all').textContent = totalCount;
+}
+
+// Chart.js 어댑터 로드 후 실행
+const script = document.createElement('script');
+script.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js';
+script.onload = () => {
+  loadData();
+  setInterval(loadData, 30000);
+};
+document.head.appendChild(script);
+</script>
+</body>
+</html>
+  `);
+});
+
 app.get("/", (req, res) => {
   const devices = listDeviceStates(db);
   const events = listEvents(db, 30);
@@ -123,8 +352,13 @@ app.get("/", (req, res) => {
 </style>
 </head>
 <body>
-  <h2>HomePulse</h2>
-  <div class="muted">로컬 관제(HTTP/TCP) + 텔레그램 알림</div>
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <h2 style="margin:0">HomePulse</h2>
+      <div class="muted">로컬 관제(HTTP/TCP) + 텔레그램 알림</div>
+    </div>
+    <a href="/graph" style="background:#4CAF50;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-size:14px">📈 응답시간 그래프</a>
+  </div>
 
   <div class="card">
     <h3>기기 상태</h3>

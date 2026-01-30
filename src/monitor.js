@@ -1,6 +1,6 @@
 import fs from "fs";
 import { checkDevice } from "./checks.js";
-import { addEvent, getDeviceState, upsertDeviceState, getEventStats, getUptimeStats } from "./db.js";
+import { addEvent, getDeviceState, upsertDeviceState, getEventStats, getUptimeStats, addResponseTime, cleanupResponseTimes } from "./db.js";
 import { sendTelegram } from "./notify.js";
 
 export function loadDevices() {
@@ -34,6 +34,14 @@ export function startMonitor({ db, env }) {
         last_message: res.message
       });
 
+      // 응답시간 기록
+      addResponseTime(db, {
+        device_id: d.id,
+        response_time: res.responseTime,
+        is_up: isUp,
+        ts: now
+      });
+
       if (changed) {
         const type = isUp ? "UP" : "DOWN";
         addEvent(db, {
@@ -57,6 +65,28 @@ export function startMonitor({ db, env }) {
 
   // 일일 요약 스케줄러 시작
   startDailySummary({ db, env });
+
+  // 오래된 응답시간 데이터 정리 (매일 자정)
+  scheduleCleanup(db);
+}
+
+function scheduleCleanup(db) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(0, 0, 0, 0);
+  next.setDate(next.getDate() + 1);
+
+  const msUntilMidnight = next.getTime() - now.getTime();
+
+  setTimeout(() => {
+    const deleted = cleanupResponseTimes(db, 7);
+    console.log(`[${new Date().toISOString()}] Cleanup: deleted ${deleted} old response time records`);
+    // 다음날도 실행
+    setInterval(() => {
+      const deleted = cleanupResponseTimes(db, 7);
+      console.log(`[${new Date().toISOString()}] Cleanup: deleted ${deleted} old response time records`);
+    }, 24 * 60 * 60 * 1000);
+  }, msUntilMidnight);
 }
 
 // 일일 요약 알림
